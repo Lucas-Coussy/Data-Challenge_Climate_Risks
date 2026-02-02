@@ -1264,117 +1264,145 @@ class ScoreCreation:
     
     def _compute_risk_multi_period(self, join: gpd.GeoDataFrame) -> pd.DataFrame:
         """
-        Calcule P et damage_factor en tenant compte des horizons climatiques :
-            H1 : current_year -> 2050
-            H2 : 2051 -> 2070
-            H3 : après 2070
-
-        P est le produit chaîné des survies sur chaque horizon.
-        damage_factor est la moyenne pondérée par la durée dans chaque horizon.
+        Calcule le risque en tenant compte des horizons climatiques et des différents types de risque.
+        
+        Pour chaque type de risque (High, Mid, Low) :
+            - Calcule P (probabilité d'inondation) sur tous les horizons H1, H2, H3
+            - Calcule damage_factor (moyenne pondérée sur les horizons)
+            - Risk = P × damage_factor
+        
+        Le risque total est la SOMME des risques pour chaque type.
 
         Parameters
         ----------
         join : GeoDataFrame
             Résultat du sjoin, contenant les colonnes :
-            INSEE_COM, geometry, periode, T, ht_min, ht_max, n_years, maturite_pret, encours
+            INSEE_COM, geometry, Période, Flood_risk, T, ht_min, ht_max, n_years, maturite_pret, encours
 
         Returns
         -------
         pd.DataFrame
             Une ligne par point géographique unique (INSEE_COM + geometry)
-            avec les colonnes : P, damage_factor, risk
+            avec la colonne : risk (somme des risques de tous les types)
         """
         H1_END = 2050
         H2_END = 2070
 
-        # --- Extract duration per horizon per assets ---
-        # Drop duplicate so as to have one unique n_years for every location
+        # --- Extract duration per horizon per asset ---
         base = (
             join[["INSEE_COM", "geometry", "n_years"]]
             .drop_duplicates()
             .copy()
         )
         n = base["n_years"]
-        base["n_H1"] = (H1_END - self.current_year) # 25 everywhere
-        base["n_H1"] = base["n_H1"].clip(lower=0, upper=n) # cut anything above n
+        base["n_H1"] = (H1_END - self.current_year)  # 25 everywhere
+        base["n_H1"] = base["n_H1"].clip(lower=0, upper=n)
 
-        base["n_H2"] = (H2_END - H1_END) # 20 everywhere
-        base["n_H2"] = base["n_H2"].clip(lower=0, upper=(n - base["n_H1"]).clip(lower=0)) # cut anything above n - base["n_H1"]
+        base["n_H2"] = (H2_END - H1_END)  # 20 everywhere
+        base["n_H2"] = base["n_H2"].clip(lower=0, upper=(n - base["n_H1"]).clip(lower=0))
 
         base["n_H3"] = (n - base["n_H1"] - base["n_H2"]).clip(lower=0)
 
-        # --- Get data per period and drop duplicates ---
-        def pivot_period(df, period_label):
-            sub = (
-                df[df["Période"] == period_label][["INSEE_COM", "geometry", "T", "ht_min", "ht_max"]]
-                .drop_duplicates()
-                .rename(columns={
-                    "T":     f"T_{period_label}",
-                    "ht_min": f"ht_min_{period_label}",
-                    "ht_max": f"ht_max_{period_label}",
-                })
-            )
-            return sub
+        # --- Process each flood risk type separately ---
+        risk_types = join["Flood_risk"].dropna().unique()
+        
+        all_risks = []
+        
+        for risk_type in risk_types:
+            # Filter data for this risk type
+            risk_data = join[join["Flood_risk"] == risk_type].copy()
+            
+            # --- Get data per period for this risk type ---
+            def pivot_period_for_risk(df, period_label):
+                sub = (
+                    df[df["Période"] == period_label][["INSEE_COM", "geometry", "T", "ht_min", "ht_max"]]
+                    .drop_duplicates()
+                    .rename(columns={
+                        "T": f"T_{period_label}",
+                        "ht_min": f"ht_min_{period_label}",
+                        "ht_max": f"ht_max_{period_label}",
+                    })
+                )
+                return sub
 
-        h1 = pivot_period(join, "H1")
-        h2 = pivot_period(join, "H2")
-        h3 = pivot_period(join, "H3")
+            h1 = pivot_period_for_risk(risk_data, "H1")
+            h2 = pivot_period_for_risk(risk_data, "H2")
+            h3 = pivot_period_for_risk(risk_data, "H3")
 
-        # Merge on (INSEE_COM, geometry)
-        merged = (
-            base
-            .merge(h1, on=["INSEE_COM", "geometry"], how="left")
-            .merge(h2, on=["INSEE_COM", "geometry"], how="left")
-            .merge(h3, on=["INSEE_COM", "geometry"], how="left")
-        )
-
-        # --- Formula for P : ---
-        # P_Hi = (1 - 1/T_Hi) ^ n_Hi
-        # if T is NaN or <= 0 on an horizon then survival = 1 (no flood)
-        # P = 1 - survival_H1 * survival_H2 * survival_H3
-        for h in ["H1", "H2", "H3"]:
-            T_col = f"T_{h}"
-            n_col = f"n_{h}"
-            merged[f"surv_{h}"] = np.where(
-                merged[T_col] > 0,
-                (1 - 1 / merged[T_col]) ** merged[n_col],
-                1.0
+            # Merge on (INSEE_COM, geometry)
+            merged = (
+                base.copy()
+                .merge(h1, on=["INSEE_COM", "geometry"], how="left")
+                .merge(h2, on=["INSEE_COM", "geometry"], how="left")
+                .merge(h3, on=["INSEE_COM", "geometry"], how="left")
             )
 
-        merged["P"] = 1 - (merged["surv_H1"] * merged["surv_H2"] * merged["surv_H3"])
+            # --- Formula for P for this risk type ---
+            # P_Hi = (1 - 1/T_Hi) ^ n_Hi
+            # if T is NaN or <= 0 on a horizon then survival = 1 (no flood of this type)
+            # P = 1 - survival_H1 * survival_H2 * survival_H3
+            for h in ["H1", "H2", "H3"]:
+                T_col = f"T_{h}"
+                n_col = f"n_{h}"
+                merged[f"surv_{h}"] = np.where(
+                    merged[T_col] > 0,
+                    (1 - 1 / merged[T_col]) ** merged[n_col],
+                    1.0
+                )
 
-        # --- Formula for Damage Factor : weighted mean per duration ---
-        # df_Hi = 1 / (1 + exp(1 - (ht_min_Hi + ht_max_Hi) / 2))
-        # damage_factor = (n_H1 * df_H1 + n_H2 * df_H2 + n_H3 * df_H3) / n_total
-        for h in ["H1", "H2", "H3"]:
-            merged[f"df_{h}"] = 1 / (
-                1 + np.exp(1 - (merged[f"ht_min_{h}"].fillna(0) + merged[f"ht_max_{h}"].fillna(0)) / 2)
-            )
-            # fixe damage to 0 if ht_min and ht_max are Na
-            mask_missing = merged[f"ht_min_{h}"].isna() & merged[f"ht_max_{h}"].isna()
-            merged.loc[mask_missing, f"df_{h}"] = 0
+            merged["P"] = 1 - (merged["surv_H1"] * merged["surv_H2"] * merged["surv_H3"])
 
-        n_total = merged["n_years"].clip(lower=1)  # avoid division per 0
-        merged["damage_factor"] = (
-            merged["n_H1"] * merged["df_H1"]
-            + merged["n_H2"] * merged["df_H2"]
-            + merged["n_H3"] * merged["df_H3"]
-        ) / n_total
+            # --- Formula for Damage Factor for this risk type ---
+            # df_Hi = 1 / (1 + exp(1 - (ht_min_Hi + ht_max_Hi) / 2))
+            # damage_factor = (n_H1 * df_H1 + n_H2 * df_H2 + n_H3 * df_H3) / n_total
+            for h in ["H1", "H2", "H3"]:
+                merged[f"df_{h}"] = 1 / (
+                    1 + np.exp(1 - (merged[f"ht_min_{h}"].fillna(0) + merged[f"ht_max_{h}"].fillna(0)) / 2)
+                )
+                # Set damage to 0 if ht_min and ht_max are NaN
+                mask_missing = merged[f"ht_min_{h}"].isna() & merged[f"ht_max_{h}"].isna()
+                merged.loc[mask_missing, f"df_{h}"] = 0
 
-        # --- Risk per points ---
-        merged["risk"] = merged["P"] * merged["damage_factor"]
+            n_total = merged["n_years"].clip(lower=1)  # avoid division by 0
+            merged["damage_factor"] = (
+                merged["n_H1"] * merged["df_H1"]
+                + merged["n_H2"] * merged["df_H2"]
+                + merged["n_H3"] * merged["df_H3"]
+            ) / n_total
 
-        return merged[["INSEE_COM", "risk"]]
+            # --- Risk for this specific risk type ---
+            merged[f"risk_{risk_type}"] = merged["P"] * merged["damage_factor"]
+            
+            all_risks.append(merged[["INSEE_COM", "geometry", f"risk_{risk_type}"]])
+
+        # --- Sum all risks together ---
+        # Start with base locations
+        result = base[["INSEE_COM", "geometry"]].copy()
+        result["risk"] = 0.0
+        
+        # Add each risk type's contribution
+        for risk_df in all_risks:
+            result = result.merge(risk_df, on=["INSEE_COM", "geometry"], how="left")
+            risk_col = [col for col in risk_df.columns if col.startswith("risk_")][0]
+            result["risk"] = result["risk"] + result[risk_col].fillna(0)
+            result = result.drop(columns=[risk_col])
+
+        return result[["INSEE_COM", "geometry", "risk"]]
 
 
     def get_score(self, portfolio_file: str, scenario: str = 'RCP4.5') -> gpd.GeoDataFrame:
         """
         Calcule le score de risque financier pour un portfolio.
 
-        Le risque est calculé en tenant compte des horizons climatiques :
-            H1 (jusqu'en 2050), H2 (2051-2070), H3 (après 2070).
-        La probabilité P est le produit chaîné des survies sur chaque horizon,
-        et le damage_factor est la moyenne pondérée par la durée dans chaque horizon.
+        Le risque est calculé séparément pour chaque type de risque d'inondation 
+        (High, Mid, Low), puis sommé pour obtenir le risque total.
+        
+        Pour chaque type de risque, on calcule :
+            - P : probabilité d'inondation sur les horizons H1, H2, H3
+            - damage_factor : facteur de dommage moyen pondéré
+            - risk = P × damage_factor
+        
+        Risk_total = risk_High + risk_Mid + risk_Low
 
         Parameters
         ----------
@@ -1413,7 +1441,7 @@ class ScoreCreation:
         # Drop duplicates
         join.drop_duplicates(inplace=True)
 
-        # Get risk accounting for periodes H1/H2/H3
+        # Get risk accounting for periods H1/H2/H3 and all risk types
         risk_per_point = self._compute_risk_multi_period(join)
 
         # Get mean per commune
