@@ -244,7 +244,7 @@ $$P_{L,l,r} = 1 - \text{Survival}_{L,l,r}$$
 **5. Facteur de dommage**
 
 Pour chaque période $h$ où des données du type d'inondation $r$ existent, nous définissons nos dommages en fonction de 
-$\text{ht\_min}_{h,r}$ et $\text{ht\_max}_{h,r}$ :
+ht_min(h,r) et ht_max(h,r) :
 
 ```math
  \text{damage}_{L,l,h,r} = \frac{1}{1 + \exp \left(1 - \frac{\text{ht\_min}_{h,r} + \text{ht\_max}_{h,r}}{2} \right)} 
@@ -252,14 +252,16 @@ $\text{ht\_min}_{h,r}$ et $\text{ht\_max}_{h,r}$ :
 
 Nous considérons ici que nous perdons la moitié de la valeur de nos actifs lorsque notre hauteur moyenne atteint 1 mètre. 
 C'est probablement surestimé, mais en raison d'un manque d'informations sur l'impact de la hauteur d'une inondation sur la perte économique, nous utiliserons cette mesure pour nos dommages. 
-Ensuite, nous calculons une moyenne pondérée dans le temps sur les périodes pour obtenir le $\text{damage\_factor}$ total pour ce risque : 
+Ensuite, nous calculons une moyenne pondérée dans le temps sur les périodes pour obtenir le damage_factor total pour ce risque : 
 
 ```math
 \text{damage\_factor}_{L,l,r} = \frac{\sum_{h \in \{H1,H2,H3\}} n_{L,l,h} \cdot \text{damage}_{L,l,h,r}}{n_{L,l}}
 ```
+
 **6. Risque pour le type $r$** 
 
-Ensuite, pour notre risque $r$, notre perte attendue (en proportion de la valeur de l'actif) est : 
+Ensuite, pour notre risque $r$, notre perte attendue (en proportion de la valeur de l'actif) est :
+
 ```math
 \text{Risk}_{L,l,r} = P_{L,l,r} \times \text{damage\_factor}_{L,l,r}
 ```
@@ -267,6 +269,7 @@ Ensuite, pour notre risque $r$, notre perte attendue (en proportion de la valeur
 **Risque total** 
 
 Nous sommons ensuite nos risques partiels pour obtenir notre risque total : 
+
 ```math
 \text{Risk}_{L,l} = \sum_{r \in \{\text{High, Mid, Low}\}} \text{Risk}_{L,l,r}
 ```
