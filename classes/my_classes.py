@@ -21,6 +21,9 @@ import joblib
 
 import warnings
 
+plt.style.use('default')
+
+
 class Format_Flood_Data:
     """
     A class to process flood risk data for geographic points.
@@ -1649,4 +1652,320 @@ class VisualizeResults:
             plt.tight_layout()
             plt.show()
         
+import warnings
+import numpy as np
+import pandas as pd
+import geopandas as gpd
+import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
+from typing import List, Dict, Optional, Tuple
+from pathlib import Path
 
+
+class Portfolio_Context_Explained:
+    """
+    Analyse les conditions climatiques d'un portfolio vs France.
+    
+    Parameters
+    ----------
+    scenario_files : List[str]
+        Chemins complets vers les fichiers de prédiction
+    portfolio_files : List[str]
+        Chemins complets vers les fichiers de portfolio
+    buffer_m : float, optional
+        Rayon de buffer en mètres, default=1000
+    sensitive_variables : List[str], optional
+        Variables à analyser, default=['NORRR1MM', 'NORPQ90', 'NORHUSAV', 'NORETPC']
+    scaler_path : str, optional
+        Chemin vers le scaler, default='model/ht_scaler.pkl'
+    """
+    
+    def __init__(self, 
+                 scenario_files: List[str],
+                 portfolio_files: List[str],
+                 buffer_m: float = 1000,
+                 sensitive_variables: List[str] = None,
+                 scaler_path: str = 'model/ht_scaler.pkl'):
+        
+        warnings.simplefilter(action='ignore', category=FutureWarning)
+        
+        self.scenario_files = scenario_files
+        self.portfolio_files = portfolio_files
+        self.buffer_m = buffer_m
+        
+        if sensitive_variables is None:
+            self.sensitive_variables = ['NORRR1MM', 'NORPQ90', 'NORHUSAV', 'NORETPC']
+        else:
+            self.sensitive_variables = sensitive_variables
+        
+        self.scale_col = ['NORPAV', 'NORRR', 'NORRR1MM', 'NORPN20MM', 'NORPFL90',
+                          'NORPXCDD', 'NORPINT', 'NORPQ90', 'NORPQ99', 'NORRR99', 
+                          'NORHUSAV', 'NORETPC', 'dist_fleuve_km', 'dist_riviere_km', 
+                          'dist_cote_km']
+        
+        self.scaler = joblib.load(scaler_path)
+        
+        self.scenario_colors = {
+            'RCP_2.6': '#2ecc71',
+            'RCP_4.5': '#f39c12', 
+            'RCP_8.5': '#e74c3c'
+        }
+
+        self.portfolio_label_map = {
+            Path(p).stem: f"Portefeuille_{i+1}"
+            for i, p in enumerate(portfolio_files)
+        }
+        
+        print(f"✓ Initialisé: {len(scenario_files)} scénarios, {len(portfolio_files)} portfolios")
+    
+    def _read_portfolio(self, portfolio_path: str) -> gpd.GeoDataFrame:
+        """Lit un portfolio et retourne un GeoDataFrame en EPSG:2154"""
+        df = pd.read_csv(portfolio_path, sep=';')
+        
+        if 'longitude' in df.columns and 'latitude' in df.columns:
+            df['geometry'] = gpd.points_from_xy(df['longitude'], df['latitude'])
+            gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+            gdf = gdf.to_crs(epsg=2154)
+            
+        elif 'geometry' in df.columns:
+            from shapely import wkt
+            from shapely.geometry import Point, Polygon, MultiPolygon, LineString
+            
+            if isinstance(df['geometry'].iloc[0], (Point, Polygon, MultiPolygon, LineString)):
+                gdf = gpd.GeoDataFrame(df, geometry='geometry')
+            elif df['geometry'].dtype == 'object':
+                df['geometry'] = df['geometry'].apply(
+                    lambda x: wkt.loads(x) if pd.notna(x) and isinstance(x, str) else x
+                )
+                gdf = gpd.GeoDataFrame(df, geometry='geometry')
+            else:
+                gdf = gpd.GeoDataFrame(df, geometry='geometry')
+            
+            # Ensure CRS is 2154
+            if gdf.crs is None:
+                gdf.set_crs(epsg=2154, inplace=True)
+            elif gdf.crs.to_epsg() != 2154:
+                gdf = gdf.to_crs(epsg=2154)
+        else:
+            raise ValueError("Portfolio must contain (longitude, latitude) or geometry column")
+        
+        return gdf
+    
+    def _read_prediction(self, prediction_path: str) -> gpd.GeoDataFrame:
+        """Lit une prédiction et retourne un GeoDataFrame en EPSG:2154"""
+        df = pd.read_csv(prediction_path)
+        
+        # Unscale
+        df_scaled = df[self.scale_col].values
+        df[self.scale_col] = self.scaler.inverse_transform(df_scaled)
+
+        # Clean missing values
+        if 'ht_max' in df.columns and 'ht_min' in df.columns:
+            df['ht_max'] = np.where(df['ht_max'] == 1000, df['ht_min'], df['ht_max'])
+            df['ht_min'] = np.where(df['ht_min'] == 1000, df['ht_max'], df['ht_min'])
+
+        # Create geometry and convert to EPSG:2154
+        df['geometry'] = gpd.points_from_xy(df['longitude'], df['latitude'])
+        gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+        gdf = gdf.to_crs(epsg=2154)
+        
+        return gdf
+    
+    def _compute_stats(self, data: gpd.GeoDataFrame, scenario: str, location: str) -> pd.DataFrame:
+        """Calcule les statistiques pour chaque variable"""
+        stats = []
+        for var in self.sensitive_variables:
+            if var in data.columns:
+                stats.append({
+                    'variable': var,
+                    'mean': data[var].mean(),
+                    'std': data[var].std(),
+                    'scenario': scenario,
+                    'localization': location,
+                    'n_points': len(data)
+                })
+        return pd.DataFrame(stats)
+    
+    def compute_all_statistics(self) -> pd.DataFrame:
+        """Calcule toutes les statistiques"""
+        all_stats = []
+        
+        print("\n" + "="*70)
+        print("CALCUL DES STATISTIQUES")
+        print("="*70)
+        
+        for scenario_path in self.scenario_files:
+            scenario_name = Path(scenario_path).stem.replace('_prediction', '')
+            print(f"\n--- {scenario_name} ---")
+            
+            prediction = self._read_prediction(scenario_path)
+            print(f"✓ Prediction: {len(prediction)} points (CRS: {prediction.crs.to_epsg()})")
+            
+            # France stats
+            france_stats = self._compute_stats(prediction, scenario_name, 'France')
+            all_stats.append(france_stats)
+            print(f"✓ France: {len(france_stats)} variables")
+            
+            # Portfolio stats
+            for portfolio_path in self.portfolio_files:
+                portfolio_name = Path(portfolio_path).stem
+                
+                try:
+                    portfolio = self._read_portfolio(portfolio_path)
+                    print(f"  Portfolio {portfolio_name}: {len(portfolio)} points (CRS: {portfolio.crs.to_epsg()})")
+                    
+                    # Buffer and spatial join
+                    portfolio_buffered = portfolio.copy()
+                    portfolio_buffered['geometry'] = portfolio_buffered.geometry.buffer(self.buffer_m)
+                    
+                    joined = gpd.sjoin(portfolio_buffered, prediction, how='inner', predicate='intersects')
+                    
+                    # Drop duplicate columns
+                    cols_to_drop = [col for col in joined.columns if col.endswith('_right')]
+                    joined = joined.drop(columns=cols_to_drop, errors='ignore')
+                    
+                    if len(joined) > 0:
+                        portfolio_stats = self._compute_stats(joined, scenario_name, portfolio_name)
+                        all_stats.append(portfolio_stats)
+                        print(f"  ✓ {portfolio_name}: {len(joined)} matches, {len(portfolio_stats)} variables")
+                    else:
+                        print(f"  ⚠ {portfolio_name}: No spatial match")
+                        
+                except Exception as e:
+                    print(f"  ✗ {portfolio_name}: {e}")
+        
+        result_df = pd.concat(all_stats, ignore_index=True) if all_stats else pd.DataFrame()
+        print(f"\n✅ Total: {len(result_df)} entries")
+        return result_df
+    
+    def save_statistics(self, output_path: str = 'scenario_statistics.csv') -> str:
+        """Sauvegarde les statistiques"""
+        stats_df = self.compute_all_statistics()
+        
+        if len(stats_df) == 0:
+            print("⚠ No statistics to save")
+            return None
+        
+        stats_df.to_csv(output_path, index=False)
+        print(f"\n✓ Saved: {output_path}")
+        return output_path
+    
+    def plot_deviation_from_france(self, 
+                                   stats_df: pd.DataFrame = None,
+                                   show=True,
+                                   output_folder: str = '/mnt/user-data/outputs',
+                                   figsize: Tuple[int, int] = (16, 10)) -> plt.Figure:
+        """Génère le graphique de déviation vs France"""
+        
+        if stats_df is None:
+            stats_df = self.compute_all_statistics()
+        
+        if len(stats_df) == 0:
+            print("⚠ No data to plot")
+            return None
+        
+        print("\n" + "="*70)
+        print("GÉNÉRATION DU GRAPHIQUE")
+        print("="*70)
+        
+        Path(output_folder).mkdir(parents=True, exist_ok=True)
+        
+        france_data = stats_df[stats_df['localization'] == 'France'].copy()
+        portfolio_data = stats_df[stats_df['localization'] != 'France'].copy()
+        
+        if len(france_data) == 0 or len(portfolio_data) == 0:
+            print("⚠ Missing France or Portfolio data")
+            return None
+        
+        scenarios = sorted(stats_df['scenario'].unique())
+        variables = sorted(stats_df['variable'].unique())
+        
+        fig, axes = plt.subplots(len(variables), len(scenarios), 
+                                figsize=figsize, squeeze=False)
+        
+        fig.suptitle('Déviation des Portfolios vs France (%)', 
+                   fontsize=16, fontweight='bold', y=0.995)
+        
+        for var_idx, variable in enumerate(variables):
+            for scen_idx, scenario in enumerate(scenarios):
+                ax = axes[var_idx, scen_idx]
+                
+                # France reference
+                france_ref = france_data[
+                    (france_data['scenario'] == scenario) & 
+                    (france_data['variable'] == variable)
+                ]
+                
+                if len(france_ref) == 0:
+                    ax.text(0.5, 0.5, 'No data', ha='center', va='center')
+                    ax.set_title(f'{scenario} - {variable}')
+                    continue
+                
+                france_mean = france_ref['mean'].values[0]
+                
+                # Portfolio data
+                port_subset = portfolio_data[
+                    (portfolio_data['scenario'] == scenario) &
+                    (portfolio_data['variable'] == variable)
+                ]
+                
+                if len(port_subset) > 0:
+                    deviations = []
+                    labels = []
+                    
+                    for _, row in port_subset.iterrows():
+                        if france_mean != 0:
+                            deviation_pct = ((row['mean'] - france_mean) / france_mean) * 100
+                        else:
+                            deviation_pct = 0
+                        deviations.append(deviation_pct)
+                        labels.append(self.portfolio_label_map.get(row['localization'], row['localization']))
+                    
+                    colors = [self.scenario_colors.get(scenario, 'grey')] * len(deviations)
+                    ax.bar(range(len(deviations)), deviations, color=colors, alpha=0.7)
+                    ax.axhline(y=0, color='black', linestyle='--', linewidth=1.5)
+                    
+                    ax.set_xticks(range(len(labels)))
+                    ax.set_xticklabels(labels, rotation=45, ha='right')
+                    ax.set_ylabel('Déviation (%)')
+                    ax.set_title(f'{scenario} - {variable}', fontsize=10)
+                    ax.grid(True, alpha=0.3, axis='y')
+                else:
+                    ax.text(0.5, 0.5, 'No portfolio data', ha='center', va='center')
+                    ax.set_title(f'{scenario} - {variable}')
+        
+        plt.tight_layout()
+        if show:
+            plt.show()
+
+        save_path = f'{output_folder}/deviation_portfolios_vs_france.png'
+        fig.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+        print(f"✓ Saved: {save_path}")
+        
+        plt.close()
+        return fig
+    
+    def generate_complete_report(self, show=True, output_folder: str = '/mnt/user-data/outputs') -> Dict:
+        """Génère le rapport complet"""
+        print("\n" + "="*70)
+        print("RAPPORT COMPLET")
+        print("="*70)
+        
+        Path(output_folder).mkdir(parents=True, exist_ok=True)
+        
+        stats_path = f'{output_folder}/scenario_statistics.csv'
+        self.save_statistics(stats_path)
+        
+        stats_df = pd.read_csv(stats_path)
+        
+        fig = self.plot_deviation_from_france(stats_df=stats_df, show=show, output_folder=output_folder)
+        
+        print(f"\n{'='*70}")
+        print(f"✅ TERMINÉ: {output_folder}")
+        print(f"{'='*70}")
+        
+        return {
+            'statistics_file': stats_path,
+            'figure': f'{output_folder}/deviation_portfolios_vs_france.png'
+        }
