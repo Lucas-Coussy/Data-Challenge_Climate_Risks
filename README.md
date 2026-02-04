@@ -381,3 +381,31 @@ On place ci-dessous le graphique de nos courbes Roc pour nos classifieurs binair
 **Classifiers ROC Curves**
 
 <img src="visuals/ROC_curves_RandomForest_Classifier.png" alt="Classifiers ROC Curves" width="80%">
+
+
+#### Visualisation
+
+
+On place ci-dessous des visualisations complémentaires des résultats fournis par nos modèles.
+
+Les cartes suivantes illustrent les prédictions des risques d’inondation sur le territoire français. 
+
+Elles superposent le réseau hydrographique actuel ainsi que les niveaux de risque estimés. 
+Les zones à risque élevé sont représentées par des points rouges, les risques moyens en jaune, et les risques faibles en violet.
+
+Il convient toutefois de noter que plusieurs points peuvent être spatialement superposés. Dans ce cas, seul le niveau de risque le plus élevé est visible selon la hiérarchie suivante : $\textit{high} > \textit{mid} > \textit{low}$.
+
+<figure style="text-align: center; margin-bottom: 40px;">
+  <img src="visuals/Inondation_map_RCP2.6.png" width="70%">
+  <figcaption>Visualisation de nos prédictions de classes — scénario RCP 2.6</figcaption>
+</figure>
+
+<figure style="text-align: center; margin-bottom: 40px;">
+  <img src="visuals/Inondation_map_RCP4.5.png" width="70%">
+  <figcaption>Visualisation de nos prédictions de classes — scénario RCP 4.5</figcaption>
+</figure>
+
+<figure style="text-align: center; margin-bottom: 40px;">
+  <img src="visuals/Inondation_map_RCP8.5.png" width="70%">
+  <figcaption>Visualisation de nos prédictions de classes — scénario RCP 8.5</figcaption>
+</figure>
