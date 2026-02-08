@@ -276,6 +276,16 @@ Nous sommons ensuite nos risques partiels pour obtenir notre risque total :
 
 > **Attention** : théoriquement, ce risque est défini dans l'intervalle [0, 3], mais en pratique reste dans [0, 1] car les probabilités sont faibles.
 
+**Pertes attendues**
+
+Afin d'obtenir les pertes en termes financiers, nous multiplions le risque total par le montant de l'actif correspondant aux coordonnées $(L,l)$ :
+
+```math
+\text{EL}_{L,l} = C_{L,l} \cdot \text{Risk}_{L,l}
+```
+
+où $\text{EL}_{L,l}$ représente les pertes attendues (en millions d'euros) aux coordonnées $(L,l)$ et $C_{L,l}$ le capital associé (en millions d'euros) aux coordonnées $(L,l)$.
+
 ##### Hypothèses
 
 1. **Indépendance entre années** : On suppose que les inondations sont indépendantes d'une année à l'autre.
